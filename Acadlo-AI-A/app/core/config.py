@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://redis:6379"
     
     # Embedding Provider (OpenAI)
-    OPENAI_API_KEY: str = "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"  # Required for embedding generation
+    OPENAI_API_KEY: str = ""  # Set via environment variable in production; required for embedding generation
     EMBEDDING_MODEL_NAME: str = "text-embedding-3-small" 
     
     # LLM Provider Configuration
