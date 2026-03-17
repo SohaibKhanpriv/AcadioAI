@@ -6,6 +6,8 @@ COPY package.json package-lock.json ./
 RUN npm ci
 
 FROM base AS build
+ARG NUXT_PUBLIC_API_BASE_URL=http://localhost:8000
+ENV NUXT_PUBLIC_API_BASE_URL=$NUXT_PUBLIC_API_BASE_URL
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build
