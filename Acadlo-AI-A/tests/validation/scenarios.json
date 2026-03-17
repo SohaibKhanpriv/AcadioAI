@@ -1,0 +1,394 @@
+{
+  "version": "1.0",
+  "base_url": "http://localhost:8000",
+  "scenarios": [
+    {
+      "id": "onboarding_full",
+      "name": "Onboarding - First-time student, no lesson provided",
+      "category": "onboarding",
+      "setup": {
+        "tenant_id": "test_tenant",
+        "student_id": "student_new_001",
+        "lesson_id": "pending",
+        "objective_ids": [],
+        "objectives": null
+      },
+      "turns": [
+        {
+          "turn": 1,
+          "action": "start",
+          "input": null,
+          "expected": {
+            "contains_any": ["topic", "what do you want to learn", "subject", "question", "grade", "level", "language"],
+            "must_not_contain": ["let's start with", "here's a question", "solve this"],
+            "lesson_complete": false
+          }
+        },
+        {
+          "turn": 2,
+          "action": "turn",
+          "input": "division, grade 4, beginner, English",
+          "expected": {
+            "must_not_contain": ["what grade", "what level", "what language"],
+            "lesson_complete": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "onboarding_returning",
+      "name": "Onboarding - Returning student with full profile + lesson, skips to teaching",
+      "category": "onboarding",
+      "setup": {
+        "tenant_id": "test_tenant",
+        "student_id": "student_returning_001",
+        "lesson_id": "math_division",
+        "objective_ids": ["obj_division_intro"],
+        "objectives": null
+      },
+      "turns": [
+        {
+          "turn": 1,
+          "action": "start",
+          "input": null,
+          "expected": {
+            "must_not_contain": ["what grade", "what level", "what topic", "what language"],
+            "lesson_complete": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "onboarding_chat_before_answer",
+      "name": "Onboarding - Student chats before answering, tutor redirects",
+      "category": "onboarding",
+      "setup": {
+        "tenant_id": "test_tenant",
+        "student_id": "student_chat_002",
+        "lesson_id": "pending",
+        "objective_ids": [],
+        "objectives": null
+      },
+      "turns": [
+        {
+          "turn": 1,
+          "action": "start",
+          "input": null,
+          "expected": { "lesson_complete": false }
+        },
+        {
+          "turn": 2,
+          "action": "turn",
+          "input": "I like pizza",
+          "expected": {
+            "contains_any": ["topic", "learn", "question", "answer", "grade", "level"],
+            "lesson_complete": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "onboarding_with_lesson",
+      "name": "Onboarding - Lesson provided, skip topic",
+      "category": "onboarding",
+      "setup": {
+        "tenant_id": "test_tenant",
+        "student_id": "student_lesson_002",
+        "lesson_id": "math_grade4_division",
+        "objective_ids": ["obj_division_intro", "obj_division_practice"],
+        "objectives": null
+      },
+      "turns": [
+        {
+          "turn": 1,
+          "action": "start",
+          "input": null,
+          "expected": {
+            "contains_any": ["grade", "level", "language", "question"],
+            "lesson_complete": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "teach_one_wrong",
+      "name": "One wrong answer - hint, ask to try again",
+      "category": "teaching",
+      "setup": {
+        "tenant_id": "test_tenant",
+        "student_id": "student_one_wrong_003a",
+        "lesson_id": "math_division",
+        "objective_ids": ["obj_division_intro"],
+        "objectives": null
+      },
+      "turns": [
+        {
+          "turn": 1,
+          "action": "start",
+          "input": null,
+          "expected": { "lesson_complete": false }
+        },
+        {
+          "turn": 2,
+          "action": "turn",
+          "input": "7",
+          "expected": {
+            "contains_any": ["try", "hint", "think", "again", "close", "not quite"],
+            "lesson_complete": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "teach_two_wrong",
+      "name": "Two consecutive wrong - simplify + different method",
+      "category": "teaching",
+      "setup": {
+        "tenant_id": "test_tenant",
+        "student_id": "student_two_wrong_003b",
+        "lesson_id": "math_division",
+        "objective_ids": ["obj_division_intro"],
+        "objectives": null
+      },
+      "turns": [
+        {
+          "turn": 1,
+          "action": "start",
+          "input": null,
+          "expected": { "lesson_complete": false }
+        },
+        {
+          "turn": 2,
+          "action": "turn",
+          "input": "10",
+          "expected": { "lesson_complete": false }
+        },
+        {
+          "turn": 3,
+          "action": "turn",
+          "input": "12",
+          "expected": {
+            "contains_any": ["different", "simpler", "another way", "try", "method", "objects", "draw"],
+            "lesson_complete": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "teach_correct_answer",
+      "name": "Correct answer - brief reinforcement + harder",
+      "category": "teaching",
+      "setup": {
+        "tenant_id": "test_tenant",
+        "student_id": "student_teach_003",
+        "lesson_id": "math_division",
+        "objective_ids": ["obj_division_intro"],
+        "objectives": null
+      },
+      "turns": [
+        {
+          "turn": 1,
+          "action": "start",
+          "input": null,
+          "expected": { "lesson_complete": false }
+        },
+        {
+          "turn": 2,
+          "action": "turn",
+          "input": "4",
+          "expected": {
+            "contains_any": ["right", "correct", "good", "exactly", "yes"],
+            "lesson_complete": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "mcq_trigger",
+      "name": "Random answer (9999) - tutor switches to MCQ",
+      "category": "mcq",
+      "setup": {
+        "tenant_id": "test_tenant",
+        "student_id": "student_mcq_004",
+        "lesson_id": "math_division",
+        "objective_ids": ["obj_division_intro"],
+        "objectives": null
+      },
+      "turns": [
+        {
+          "turn": 1,
+          "action": "start",
+          "input": null,
+          "expected": { "lesson_complete": false }
+        },
+        {
+          "turn": 2,
+          "action": "turn",
+          "input": "9999",
+          "expected": {
+            "mcq_format": true,
+            "contains_any": ["A)", "B)", "C)", "D)", "choose", "think"],
+            "lesson_complete": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "mcq_correct_exit",
+      "name": "MCQ - Student answers correctly, exits MCQ and resumes",
+      "category": "mcq",
+      "setup": {
+        "tenant_id": "test_tenant",
+        "student_id": "student_mcq_exit_004b",
+        "lesson_id": "math_division",
+        "objective_ids": ["obj_division_intro"],
+        "objectives": null
+      },
+      "turns": [
+        { "turn": 1, "action": "start", "input": null, "expected": { "lesson_complete": false } },
+        { "turn": 2, "action": "turn", "input": "9999", "expected": { "mcq_format": true, "lesson_complete": false } },
+        {
+          "turn": 3,
+          "action": "turn",
+          "input": "B",
+          "expected": {
+            "contains_any": ["right", "correct", "good", "yes"],
+            "lesson_complete": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "mcq_reject_invalid",
+      "name": "MCQ - Student gives non-A/B/C/D, tutor rejects",
+      "category": "mcq",
+      "setup": {
+        "tenant_id": "test_tenant",
+        "student_id": "student_mcq_invalid_004c",
+        "lesson_id": "math_division",
+        "objective_ids": ["obj_division_intro"],
+        "objectives": null
+      },
+      "turns": [
+        { "turn": 1, "action": "start", "input": null, "expected": { "lesson_complete": false } },
+        { "turn": 2, "action": "turn", "input": "9999", "expected": { "mcq_format": true, "lesson_complete": false } },
+        {
+          "turn": 3,
+          "action": "turn",
+          "input": "the second one",
+          "expected": {
+            "contains_any": ["A", "B", "C", "D", "choose", "letter", "option"],
+            "lesson_complete": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "off_topic_redirect",
+      "name": "Off-topic - firm redirect",
+      "category": "off_topic",
+      "setup": {
+        "tenant_id": "test_tenant",
+        "student_id": "student_off_005",
+        "lesson_id": "math_division",
+        "objective_ids": ["obj_division_intro"],
+        "objectives": null
+      },
+      "turns": [
+        {
+          "turn": 1,
+          "action": "start",
+          "input": null,
+          "expected": { "lesson_complete": false }
+        },
+        {
+          "turn": 2,
+          "action": "turn",
+          "input": "What is the capital of France?",
+          "expected": {
+            "must_not_contain": ["Paris"],
+            "contains_any": ["lesson", "topic", "stay", "focus", "back"],
+            "lesson_complete": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "small_talk_redirect",
+      "name": "Small talk (I'm bored) - acknowledge + redirect",
+      "category": "off_topic",
+      "setup": {
+        "tenant_id": "test_tenant",
+        "student_id": "student_small_005b",
+        "lesson_id": "math_division",
+        "objective_ids": ["obj_division_intro"],
+        "objectives": null
+      },
+      "turns": [
+        { "turn": 1, "action": "start", "input": null, "expected": { "lesson_complete": false } },
+        {
+          "turn": 2,
+          "action": "turn",
+          "input": "I'm bored",
+          "expected": {
+            "contains_any": ["understand", "let's", "back", "question", "try"],
+            "lesson_complete": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "idk_response",
+      "name": "I don't know - hint or simpler question",
+      "category": "engagement",
+      "setup": {
+        "tenant_id": "test_tenant",
+        "student_id": "student_idk_006",
+        "lesson_id": "math_division",
+        "objective_ids": ["obj_division_intro"],
+        "objectives": null
+      },
+      "turns": [
+        {
+          "turn": 1,
+          "action": "start",
+          "input": null,
+          "expected": { "lesson_complete": false }
+        },
+        {
+          "turn": 2,
+          "action": "turn",
+          "input": "I don't know",
+          "expected": {
+            "must_not_contain": ["ok", "next question", "let's move on"],
+            "lesson_complete": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "lesson_generation",
+      "name": "No lesson provided, after onboarding LLM generates lesson",
+      "category": "lesson_gen",
+      "setup": {
+        "tenant_id": "test_tenant",
+        "student_id": "student_lesson_gen_007",
+        "lesson_id": "pending",
+        "objective_ids": [],
+        "objectives": null
+      },
+      "turns": [
+        { "turn": 1, "action": "start", "input": null, "expected": { "lesson_complete": false } },
+        {
+          "turn": 2,
+          "action": "turn",
+          "input": "fractions, grade 5, intermediate, English",
+          "expected": {
+            "contains_any": ["fraction", "introduction", "let's", "start", "first"],
+            "lesson_complete": false
+          }
+        }
+      ]
+    }
+  ]
+}

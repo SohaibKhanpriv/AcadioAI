@@ -1,0 +1,1 @@
+docker-compose build acadlo-ai-core && docker-compose up -d acadlo-ai-core && sleep 5 && docker-compose exec acadlo-ai-core alembic upgrade head

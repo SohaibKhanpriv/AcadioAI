@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env
+.env.local
+.env.*
+
+# Git
+.git/
+.gitignore
+
+# Docker
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+# Documentation
+*.md
+docs/
+
+# Testing
+.pytest_cache/
+tests/
+
+# Logs
+*.log
+logs/
+demo-frontend/
+demo-frontend/node_modules/
+Acadlo-AI-Dev-A/
+ClientsMessages/
+*.tar
+
+# OS
+.DS_Store
+Thumbs.db
+
+
+

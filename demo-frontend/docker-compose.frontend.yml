@@ -1,0 +1,9 @@
+services:
+  acadlo-ai-frontend:
+    image: acadlo-ai-frontend:latest
+    container_name: acadlo-ai-frontend
+    restart: unless-stopped
+    env_file:
+      - .env.frontend
+    ports:
+      - "3000:3000"
