@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        NUXT_PUBLIC_API_BASE_URL: http://ec2-3-129-17-73.us-east-2.compute.amazonaws.com:8000
+        NUXT_PUBLIC_API_BASE_URL: http://3.141.165.198:8000
     image: acadlo-ai-frontend:latest
     container_name: acadlo-ai-frontend
     restart: unless-stopped
