@@ -13,8 +13,10 @@ COPY . .
 RUN npm run build
 
 FROM base AS runtime
+ARG NUXT_PUBLIC_API_BASE_URL=http://localhost:8000
 ENV NODE_ENV=production
 ENV PORT=3000
+ENV NUXT_PUBLIC_API_BASE_URL=$NUXT_PUBLIC_API_BASE_URL
 COPY --from=build /app/.output ./.output
 EXPOSE 3000
 CMD ["node", ".output/server/index.mjs"]
