@@ -102,6 +102,11 @@ class Document(Base):
         "IngestionJob",
         back_populates="document"
     )
+    ingested_topics: Mapped[List["IngestedTopic"]] = relationship(
+        "IngestedTopic",
+        back_populates="document",
+        cascade="all, delete-orphan"
+    )
     
     # Indexes
     __table_args__ = (
@@ -258,6 +263,73 @@ class IngestionJob(Base):
         Index("ix_ingestion_jobs_tenant_id", "tenant_id"),
         Index("ix_ingestion_jobs_status", "status"),
         Index("ix_ingestion_jobs_document_id", "document_id"),
+    )
+
+
+class IngestedTopic(Base):
+    """
+    Represents a topic/section extracted from an ingested document by LLM
+    during the ingestion pipeline. Each record stores a subject classification,
+    topic name, summary, suggested objectives, and links to the chunks that
+    cover this topic.
+    """
+    __tablename__ = "ingested_topics"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("documents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    subject: Mapped[str] = mapped_column(
+        String(50), nullable=False
+    )  # Value from SubjectEnum
+
+    topic_name: Mapped[str] = mapped_column(String(300), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+    grade_level: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+
+    suggested_objectives: Mapped[List[Dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )  # [{title, description}, ...]
+
+    chunk_ids: Mapped[List[str]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )  # List of chunk UUID strings linked to this topic
+
+    topic_embedding: Mapped[Optional[List[float]]] = mapped_column(
+        Vector(1536), nullable=True
+    )
+
+    source_offsets: Mapped[Optional[Dict[str, Any]]] = mapped_column(
+        JSONB, nullable=True
+    )  # {start, end} character ranges in original document
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    # Relationships
+    document: Mapped["Document"] = relationship(
+        "Document",
+        back_populates="ingested_topics",
+    )
+
+    __table_args__ = (
+        Index("ix_ingested_topics_tenant_id", "tenant_id"),
+        Index("ix_ingested_topics_tenant_subject", "tenant_id", "subject"),
+        Index("ix_ingested_topics_document_id", "document_id"),
     )
 
 

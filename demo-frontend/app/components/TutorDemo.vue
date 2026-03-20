@@ -32,16 +32,6 @@
           </div>
           
           <div class="form-group">
-            <label for="lessonId">Lesson ID (optional)</label>
-            <input 
-              id="lessonId" 
-              v-model="config.lessonId" 
-              class="input" 
-              placeholder="e.g., lesson_fractions_101"
-            />
-          </div>
-          
-          <div class="form-group">
             <label for="locale">Language</label>
             <select id="locale" v-model="config.locale" class="input">
               <option value="en-US">English (US)</option>
@@ -51,44 +41,87 @@
             </select>
           </div>
         </div>
-        
-        <div class="form-group full-width">
-          <label for="objectiveIds">Objective IDs (optional, comma-separated)</label>
-          <input
-            id="objectiveIds"
-            v-model="config.objectiveIds"
-            class="input"
-            placeholder="e.g., obj_understand_fractions, obj_add_fractions"
-          />
-          <small class="input-help">If left blank, plain-English objectives below will be used.</small>
-        </div>
 
         <div class="form-group full-width">
-          <label>Objectives (plain English)</label>
-          <div class="objective-items">
-            <div
-              v-for="(_, index) in config.objectives"
-              :key="index"
-              class="objective-item-row"
+          <label for="ingestedTopic">Available Topics (from ingested documents)</label>
+          <select
+            id="ingestedTopic"
+            v-model="selectedTopicId"
+            class="input"
+            :disabled="topicsLoading"
+          >
+            <option value="">{{ topicsLoading ? 'Loading topics...' : 'Enter custom topic (skip)' }}</option>
+            <option
+              v-for="topic in availableTopics"
+              :key="topic.id"
+              :value="topic.id"
             >
-              <input
-                v-model="config.objectives[index]"
-                class="input"
-                :placeholder="`Objective ${index + 1} (e.g., Understand equivalent fractions)`"
+              {{ topic.topic_name }} ({{ topic.subject }})
+            </option>
+          </select>
+          <small class="input-help">
+            Select an ingested topic to skip the "what topic?" question, or leave blank for a custom topic.
+          </small>
+        </div>
+
+        <div v-if="!selectedTopicId" class="form-group full-width">
+          <label class="checkbox-label">
+            <input type="checkbox" v-model="config.includeLessonObjectives" />
+            <span>Include Lesson &amp; Objectives</span>
+          </label>
+        </div>
+
+        <template v-if="!selectedTopicId && config.includeLessonObjectives">
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="lessonId">Lesson ID (optional)</label>
+              <input 
+                id="lessonId" 
+                v-model="config.lessonId" 
+                class="input" 
+                placeholder="e.g., lesson_fractions_101"
               />
-              <button
-                type="button"
-                class="btn btn-ghost objective-remove-btn"
-                @click="removeObjective(index)"
-              >
-                Remove
-              </button>
             </div>
           </div>
-          <button type="button" class="btn btn-ghost objective-add-btn" @click="addObjective">
-            + Add objective
-          </button>
-        </div>
+
+          <div class="form-group full-width">
+            <label for="objectiveIds">Objective IDs (optional, comma-separated)</label>
+            <input
+              id="objectiveIds"
+              v-model="config.objectiveIds"
+              class="input"
+              placeholder="e.g., obj_understand_fractions, obj_add_fractions"
+            />
+            <small class="input-help">If left blank, plain-English objectives below will be used.</small>
+          </div>
+
+          <div class="form-group full-width">
+            <label>Objectives (plain English)</label>
+            <div class="objective-items">
+              <div
+                v-for="(_, index) in config.objectives"
+                :key="index"
+                class="objective-item-row"
+              >
+                <input
+                  v-model="config.objectives[index]"
+                  class="input"
+                  :placeholder="`Objective ${index + 1} (e.g., Understand equivalent fractions)`"
+                />
+                <button
+                  type="button"
+                  class="btn btn-ghost objective-remove-btn"
+                  @click="removeObjective(index)"
+                >
+                  Remove
+                </button>
+              </div>
+            </div>
+            <button type="button" class="btn btn-ghost objective-add-btn" @click="addObjective">
+              + Add objective
+            </button>
+          </div>
+        </template>
         
         <div class="form-actions">
           <label class="checkbox-label">
@@ -240,7 +273,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, nextTick, computed } from 'vue'
+import { ref, reactive, nextTick, computed, watch } from 'vue'
 
 // Interfaces
 interface Message {
@@ -255,6 +288,14 @@ interface ThinkingStep {
   stage: string
   summary: string
   data?: Record<string, any>
+}
+
+interface AvailableTopic {
+  id: string
+  topic_name: string
+  subject: string
+  description: string
+  grade_level: string | null
 }
 
 interface Session {
@@ -278,11 +319,12 @@ const showThinkingTrace = computed(() => config.showThinkingTrace)
 const config = reactive({
   tenantId: 'demo_tenant',
   studentId: 'student_' + Math.random().toString(36).substring(7),
-  lessonId: 'lesson_fractions_101',
-  objectiveIds: 'obj_understand_fractions, obj_add_fractions',
-  objectives: ['Understand fractions', 'Add fractions with same denominator'],
+  lessonId: '',
+  objectiveIds: '',
+  objectives: [] as string[],
   locale: 'en-US',
-  showThinkingTrace: true
+  showThinkingTrace: true,
+  includeLessonObjectives: false
 })
 
 const session = reactive<Session>({
@@ -294,16 +336,51 @@ const session = reactive<Session>({
 
 const messages = ref<Message[]>([])
 
+// Available ingested topics for the selected tenant
+const availableTopics = ref<AvailableTopic[]>([])
+const selectedTopicId = ref('')
+const topicsLoading = ref(false)
+
+async function fetchTopics(tenantId: string) {
+  if (!tenantId.trim()) {
+    availableTopics.value = []
+    return
+  }
+  topicsLoading.value = true
+  try {
+    const resp = await fetch(`${apiBaseUrl}/v1/topics?tenant_id=${encodeURIComponent(tenantId)}`)
+    if (resp.ok) {
+      const data = await resp.json()
+      availableTopics.value = data.topics || []
+    } else {
+      availableTopics.value = []
+    }
+  } catch {
+    availableTopics.value = []
+  } finally {
+    topicsLoading.value = false
+  }
+}
+
+watch(() => config.tenantId, (val) => {
+  selectedTopicId.value = ''
+  fetchTopics(val)
+}, { immediate: true })
+
 // Methods
 async function startSession() {
   isLoading.value = true
   error.value = ''
   
   try {
-    const objectiveIds = config.objectiveIds.split(',').map(s => s.trim()).filter(Boolean)
-    const objectives = config.objectives.map(s => s.trim()).filter(Boolean)
-
-    const lessonId = config.lessonId?.trim() || null
+    const useLessonFields = !selectedTopicId.value && config.includeLessonObjectives
+    const objectiveIds = useLessonFields
+      ? config.objectiveIds.split(',').map(s => s.trim()).filter(Boolean)
+      : []
+    const objectives = useLessonFields
+      ? config.objectives.map(s => s.trim()).filter(Boolean)
+      : []
+    const lessonId = useLessonFields ? (config.lessonId?.trim() || null) : null
 
     const payload: Record<string, any> = {
       tenant_id: config.tenantId,
@@ -316,6 +393,10 @@ async function startSession() {
 
     if (objectiveIds.length > 0) {
       payload.objective_ids = objectiveIds
+    }
+
+    if (selectedTopicId.value) {
+      payload.ingested_topic_id = selectedTopicId.value
     }
     
     const response = await fetch(`${apiBaseUrl}/v1/tutor/start`, {

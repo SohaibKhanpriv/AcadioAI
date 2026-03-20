@@ -563,6 +563,8 @@ async def node_generate_tutor_response(
         last_tutor_message=_get_last_tutor_message(state),
         grade_band=grade_band,
         skill_level=skill_level,
+        rag_chunks=getattr(state, "rag_chunks", None),
+        rag_source=getattr(state, "rag_source", None),
     )
     
     state.tutor_message = message

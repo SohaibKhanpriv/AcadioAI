@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.tutor.graph_context import TutorGraphContext
 from app.tutor.enums import TutorSessionStatus, ObjectiveTeachingState, MasteryEstimate
 from app.tutor.types import (
@@ -128,6 +129,42 @@ async def load_session_and_profile(
         state.last_tutor_message = session_metadata.get("last_tutor_message")
         state.no_answer_streak = session_metadata.get("no_answer_streak", 0)
         state.objective_labels = session_metadata.get("objective_labels", {})
+
+        # Restore topic selection state (Deliverable 2)
+        state.awaiting_topic_selection = session_metadata.get("awaiting_topic_selection", False)
+        state.pending_ingested_topics = session_metadata.get("pending_ingested_topics", [])
+        if state.awaiting_topic_selection:
+            state.needs_lesson_generation = True
+
+        # Restore pre-selected ingested topic (set on /start, used after onboarding)
+        saved_pre_sel = session_metadata.get("pre_selected_ingested_topic_id")
+        if saved_pre_sel:
+            state.pre_selected_ingested_topic_id = saved_pre_sel
+
+        # Reload RAG chunks from selected ingested topic
+        saved_topic_id = session_metadata.get("selected_ingested_topic_id")
+        if saved_topic_id:
+            state.selected_ingested_topic_id = saved_topic_id
+            try:
+                from uuid import UUID as _UUID
+                from app.repositories import IngestedTopicRepository, ChunkRepository as _ChunkRepo
+                topic_repo = IngestedTopicRepository(state.db_session)
+                ingested_topic = await topic_repo.get_by_id(_UUID(saved_topic_id))
+                if ingested_topic and ingested_topic.chunk_ids:
+                    chunk_repo = _ChunkRepo(state.db_session)
+                    rag_chunks = []
+                    for cid_str in ingested_topic.chunk_ids[:15]:
+                        try:
+                            chunk = await chunk_repo.get_by_id(_UUID(cid_str))
+                            if chunk:
+                                rag_chunks.append({"chunk_id": str(chunk.id), "text": chunk.text})
+                        except Exception:
+                            pass
+                    state.rag_chunks = rag_chunks
+                    state.rag_source = "ingested"
+                    logger.info(f"Reloaded {len(rag_chunks)} RAG chunks for topic {saved_topic_id}")
+            except Exception as e:
+                logger.warning(f"Failed to reload RAG chunks: {e}")
         
         logger.info(f"Loaded existing session {state.session_id} with {len(objective_states)} objectives")
     
@@ -209,6 +246,10 @@ async def onboarding_check(state: TutorGraphContext) -> TutorGraphContext:
     profile = state.student_profile
     required = get_required_onboarding_questions(lesson_id, objective_ids, profile)
 
+    # When a pre-selected ingested topic is provided, skip the "topic" question
+    if getattr(state, "pre_selected_ingested_topic_id", None) and "topic" in required:
+        required = [q for q in required if q != "topic"]
+
     # Nothing to ask: skip onboarding
     if not required:
         state.onboarding_complete = True
@@ -287,14 +328,15 @@ async def generate_onboarding_response(state: TutorGraphContext) -> TutorGraphCo
     next_q = state.next_onboarding_question
     required = state.onboarding_required or []
 
-    # First turn (no student message): show the full question block
+    # First turn (no student message): show the question block
     if not (state.student_message and state.student_message.strip()):
         if len(required) >= 2:
-            state.tutor_reply = get_full_onboarding_prompt(locale)
+            # Build a dynamic prompt from only the *required* questions
+            state.tutor_reply = _build_onboarding_prompt(required, locale)
         elif next_q:
             state.tutor_reply = get_onboarding_question_prompt(next_q, locale, 1, len(required))
         else:
-            state.tutor_reply = get_full_onboarding_prompt(locale)
+            state.tutor_reply = _build_onboarding_prompt(required, locale)
         return state
 
     # We have a student message AND a next question still pending.
@@ -305,8 +347,43 @@ async def generate_onboarding_response(state: TutorGraphContext) -> TutorGraphCo
         return state
 
     # Shouldn't get here (onboarding should be complete), but just in case:
-    state.tutor_reply = get_full_onboarding_prompt(locale)
+    state.tutor_reply = _build_onboarding_prompt(required, locale)
     return state
+
+
+def _build_onboarding_prompt(required: list, locale: str) -> str:
+    """Build a dynamic onboarding prompt from only the required question keys."""
+    QUESTION_LABELS = {
+        "en": {
+            "topic": "What topic do you want to learn?",
+            "grade": "What grade are you in?",
+            "level": "What is your level? (Beginner / Intermediate / Advanced)",
+            "language": "What language would you like to use?",
+        },
+        "ar": {
+            "topic": "شو الموضوع اللي حاب تتعلمه؟",
+            "grade": "في أي صف أنت؟",
+            "level": "ما مستواك؟ (مبتدئ / متوسط / متقدم)",
+            "language": "بأي لغة تحب نكمل؟",
+        },
+    }
+    lang = locale.split("-")[0].lower() if locale else "en"
+    labels = QUESTION_LABELS.get(lang, QUESTION_LABELS["en"])
+
+    if not required:
+        return get_full_onboarding_prompt(locale)
+
+    lines = []
+    for i, key in enumerate(required, start=1):
+        text = labels.get(key, key)
+        lines.append(f"{i}. {text}")
+
+    if lang == "ar":
+        header = "مرحبا! قبل ما نبلش — عندي أسئلة بسيطة:"
+    else:
+        header = "Hi! Before we start — a few quick questions:"
+
+    return header + "\n" + "\n".join(lines)
 
 
 # =============================================================================
@@ -357,6 +434,545 @@ async def resolve_lesson(state: TutorGraphContext) -> TutorGraphContext:
     await state.db_session.commit()
     logger.info(f"resolve_lesson: set lesson_id={lesson_id}, {len(objective_ids)} objectives")
     return state
+
+
+# =============================================================================
+# Node: Discover Topics (Deliverable 2)
+# =============================================================================
+
+async def discover_topics(state: TutorGraphContext) -> TutorGraphContext:
+    """
+    After onboarding is complete and a lesson needs to be generated, search the
+    tenant's ingested topics for matches before falling back to LLM generation.
+
+    If ``awaiting_topic_selection`` is already True (continue turn), this node
+    delegates to ``handle_topic_selection`` logic instead.
+
+    On first entry:
+    1. Classify the student's topic into a SubjectEnum via LLM.
+    2. Embed the topic and vector-search IngestedTopic records.
+    3. If matches found → set ``awaiting_topic_selection``, build a numbered
+       topic list as the tutor reply, and short-circuit to save.
+    4. If no matches → fall through to resolve_lesson.
+    """
+    if not getattr(state, "needs_lesson_generation", False):
+        return state
+
+    # --- Pre-selected ingested topic: skip search/selection entirely ---
+    pre_id = getattr(state, "pre_selected_ingested_topic_id", None)
+    if pre_id:
+        return await _load_preselected_topic(state, pre_id)
+
+    # On a continue turn with a pending selection, route to handler
+    if getattr(state, "awaiting_topic_selection", False) and state.student_message:
+        return await _handle_topic_selection(state)
+
+    answers = getattr(state, "onboarding_answers", None) or {}
+    if state.session and state.session.session_metadata:
+        meta_answers = (state.session.session_metadata.get("onboarding") or {}).get("answers") or {}
+        if meta_answers and not answers:
+            answers = meta_answers
+
+    topic_text = (answers.get("topic") or "").strip()
+    if not topic_text:
+        return state
+
+    from app.tutor.enums import SubjectEnum
+    from app.providers.llm import get_llm_provider, LLMMessage
+    from app.providers.embedding import get_embedding_provider
+    from app.repositories import IngestedTopicRepository
+
+    # --- Step 1: classify subject ---
+    subject = SubjectEnum.OTHER.value
+    try:
+        subject_values = [e.value for e in SubjectEnum]
+        llm = get_llm_provider()
+        classify_resp = await llm.generate(
+            messages=[
+                LLMMessage(role="system", content="Classify the topic into exactly one subject. Reply with ONLY the subject value, nothing else."),
+                LLMMessage(role="user", content=f"Topic: \"{topic_text}\"\nSubjects: {', '.join(subject_values)}"),
+            ],
+            model=settings.TUTOR_LLM_MODEL,
+            temperature=0.0,
+            max_tokens=20,
+            tenant_id=state.tenant_id,
+            scenario="topic_classification",
+        )
+        raw_subject = (classify_resp.content or "").strip().lower().replace(" ", "_").replace("-", "_")
+        if raw_subject in subject_values:
+            subject = raw_subject
+        else:
+            for s in subject_values:
+                if s in raw_subject or raw_subject in s:
+                    subject = s
+                    break
+    except Exception as e:
+        logger.warning(f"Subject classification failed: {e}")
+
+    # --- Step 2: embed topic and search ---
+    SIMILARITY_THRESHOLD = 0.35
+    try:
+        emb_provider = get_embedding_provider()
+        topic_embeddings = await emb_provider.embed([topic_text])
+        topic_embedding = topic_embeddings[0]
+        await emb_provider.close()
+
+        topic_repo = IngestedTopicRepository(state.db_session)
+        results = await topic_repo.vector_search_topics(
+            query_embedding=topic_embedding,
+            tenant_id=state.tenant_id,
+            subject=subject,
+            top_k=5,
+        )
+
+        # Fall back to subject-agnostic search if subject-specific yielded nothing useful
+        if not results or results[0][1] < SIMILARITY_THRESHOLD:
+            results_all = await topic_repo.vector_search_topics(
+                query_embedding=topic_embedding,
+                tenant_id=state.tenant_id,
+                subject=None,
+                top_k=5,
+            )
+            if results_all and results_all[0][1] >= SIMILARITY_THRESHOLD:
+                results = results_all
+
+        matches = [(t, score) for t, score in results if score >= SIMILARITY_THRESHOLD]
+
+    except Exception as e:
+        logger.warning(f"Topic discovery search failed: {e}")
+        matches = []
+
+    if not matches:
+        logger.info("No ingested topic matches found; falling through to resolve_lesson")
+        return state
+
+    # --- Step 3: present topic list ---
+    pending = []
+    lines = []
+    locale = _get_locale_from_state(state)
+    lang = locale.split("-")[0].lower() if locale else "en"
+
+    for i, (topic, score) in enumerate(matches, start=1):
+        pending.append({
+            "id": str(topic.id),
+            "topic_name": topic.topic_name,
+            "description": topic.description,
+            "subject": topic.subject,
+            "score": round(score, 3),
+        })
+        lines.append(f"{i}. {topic.topic_name}")
+
+    state.awaiting_topic_selection = True
+    state.pending_ingested_topics = pending
+
+    # Persist to session metadata so it survives across turns
+    if state.session:
+        meta = dict(state.session.session_metadata or {})
+        meta["awaiting_topic_selection"] = True
+        meta["pending_ingested_topics"] = pending
+        state.session.session_metadata = meta
+
+    topic_list = "\n".join(lines)
+    if lang == "ar":
+        state.tutor_reply = (
+            f"وجدت هذه المواضيع في المحتوى الدراسي:\n{topic_list}\n\n"
+            "اختر رقم الموضوع اللي تبيه، أو اكتب موضوع جديد."
+        )
+    else:
+        state.tutor_reply = (
+            f"I found these topics in your course material:\n{topic_list}\n\n"
+            "Pick a number, or tell me a different topic."
+        )
+
+    state.needs_lesson_generation = False
+    logger.info(f"Presenting {len(pending)} ingested topic matches to student")
+    return state
+
+
+async def _handle_topic_selection(state: TutorGraphContext) -> TutorGraphContext:
+    """
+    Parse the student's topic selection and either load the ingested topic
+    or fall back to LLM generation.
+    """
+    import re as _re
+    from uuid import UUID as _UUID
+
+    from app.repositories import IngestedTopicRepository, ChunkRepository, StudentLessonRepository
+    from app.tutor.enums import ObjectiveTeachingState
+    from app.providers.llm import get_llm_provider, LLMMessage
+
+    message = (state.student_message or "").strip()
+    pending = state.pending_ingested_topics or []
+    locale = _get_locale_from_state(state)
+    lang = locale.split("-")[0].lower() if locale else "en"
+
+    selected_topic_data = None
+
+    # Try numeric selection
+    num_match = _re.search(r"\b(\d+)\b", message)
+    if num_match:
+        idx = int(num_match.group(1)) - 1
+        if 0 <= idx < len(pending):
+            selected_topic_data = pending[idx]
+
+    # Try name matching if numeric didn't work
+    if not selected_topic_data:
+        msg_lower = message.lower()
+        for p in pending:
+            if p["topic_name"].lower() in msg_lower or msg_lower in p["topic_name"].lower():
+                selected_topic_data = p
+                break
+
+    # Check for "other" / "different" intent
+    other_patterns = [
+        "other", "different", "new topic", "none", "something else",
+        "غير", "ثاني", "جديد", "لا", "موضوع ثاني",
+    ]
+    is_other = any(pat in message.lower() for pat in other_patterns)
+
+    if is_other or (not selected_topic_data and not num_match):
+        # Fall back to LLM lesson generation
+        state.awaiting_topic_selection = False
+        state.pending_ingested_topics = []
+        state.needs_lesson_generation = True
+
+        if state.session:
+            meta = dict(state.session.session_metadata or {})
+            meta["awaiting_topic_selection"] = False
+            meta["pending_ingested_topics"] = []
+            state.session.session_metadata = meta
+
+        logger.info("Student declined ingested topics, falling through to resolve_lesson")
+        return state
+
+    # --- Student selected a topic ---
+    topic_repo = IngestedTopicRepository(state.db_session)
+    ingested_topic = await topic_repo.get_by_id(_UUID(selected_topic_data["id"]))
+
+    if not ingested_topic:
+        logger.warning(f"IngestedTopic {selected_topic_data['id']} not found, falling through")
+        state.awaiting_topic_selection = False
+        state.needs_lesson_generation = True
+        return state
+
+    # Load linked chunks for RAG
+    rag_chunks = []
+    if ingested_topic.chunk_ids:
+        chunk_repo = ChunkRepository(state.db_session)
+        for cid_str in ingested_topic.chunk_ids[:15]:
+            try:
+                chunk = await chunk_repo.get_by_id(_UUID(cid_str))
+                if chunk:
+                    rag_chunks.append({"chunk_id": str(chunk.id), "text": chunk.text})
+            except Exception:
+                pass
+
+    state.rag_chunks = rag_chunks
+    state.rag_source = "ingested"
+    state.selected_ingested_topic_id = str(ingested_topic.id)
+
+    # Adapt suggested objectives to student's profile
+    suggested = ingested_topic.suggested_objectives or []
+    grade = None
+    level = None
+    if state.student_profile:
+        grade = state.student_profile.grade_band
+        level = state.student_profile.skill_level
+    if not grade and state.session and state.session.session_metadata:
+        onb = (state.session.session_metadata.get("onboarding") or {}).get("answers") or {}
+        grade = grade or onb.get("grade")
+        level = level or onb.get("level")
+
+    adapted_objectives = await _adapt_objectives(
+        suggested, ingested_topic.topic_name,
+        grade=grade, level=level,
+        tenant_id=state.tenant_id,
+    )
+
+    # Create StudentLesson + objectives
+    from app.tutor.lesson_generator import _slug
+
+    lesson_id = f"lesson_{_slug(ingested_topic.topic_name)}_{_slug(grade or 'x')}_{_slug(level or 'x')}"
+    lesson_repo = StudentLessonRepository(state.db_session)
+    objective_dicts = []
+    for i, obj in enumerate(adapted_objectives):
+        obj_id = f"obj_{_slug(obj['title'], 40)}"
+        if any(o["objective_id"] == obj_id for o in objective_dicts):
+            obj_id = f"{obj_id}_{i}"
+        objective_dicts.append({
+            "objective_id": obj_id,
+            "title": obj["title"],
+            "description": obj.get("description"),
+        })
+
+    lesson = await lesson_repo.create_lesson(
+        tenant_id=state.tenant_id,
+        student_id=state.student_id,
+        lesson_id=lesson_id,
+        topic=ingested_topic.topic_name,
+        title=ingested_topic.topic_name,
+        objectives=objective_dicts,
+        grade=grade,
+        skill_level=level,
+        language=(locale.split("-")[0] if locale else "en"),
+        source="ingested",
+    )
+    await state.db_session.flush()
+
+    objective_ids = [o["objective_id"] for o in objective_dicts]
+    objective_labels = {o["objective_id"]: o["title"] for o in objective_dicts}
+
+    state.lesson_id = lesson_id
+    state.objective_ids = objective_ids
+    state.objective_labels = objective_labels
+    state.awaiting_topic_selection = False
+    state.pending_ingested_topics = []
+    state.needs_lesson_generation = False
+
+    # Update the session in DB
+    session_repo = TutorSessionRepository(state.db_session)
+    meta = dict(state.session.session_metadata or {})
+    meta["objective_labels"] = objective_labels
+    meta["awaiting_topic_selection"] = False
+    meta["pending_ingested_topics"] = []
+    meta["selected_ingested_topic_id"] = state.selected_ingested_topic_id
+    await session_repo.update_session(
+        tenant_id=state.tenant_id,
+        session_id=state.session.id,
+        lesson_id=lesson_id,
+        objective_ids=objective_ids,
+        session_metadata=meta,
+    )
+    await state.db_session.flush()
+
+    # Create ObjectiveState records
+    objective_repo = ObjectiveStateRepository(state.db_session)
+    state.objectives = {}
+    for obj_id in objective_ids:
+        obj_state = await objective_repo.create_objective_state(
+            tenant_id=state.tenant_id,
+            session_id=state.session.id,
+            objective_id=obj_id,
+            initial_state=ObjectiveTeachingState.NOT_STARTED.value,
+        )
+        state.objectives[obj_id] = obj_state
+    await state.db_session.commit()
+
+    logger.info(
+        f"Student selected ingested topic '{ingested_topic.topic_name}', "
+        f"created lesson {lesson_id} with {len(objective_ids)} objectives, "
+        f"{len(rag_chunks)} RAG chunks loaded"
+    )
+    return state
+
+
+async def _load_preselected_topic(
+    state: TutorGraphContext,
+    topic_id_str: str,
+) -> TutorGraphContext:
+    """
+    Load a pre-selected IngestedTopic by ID, create the lesson + objectives,
+    and set RAG chunks — skipping the interactive topic-selection flow.
+    """
+    from uuid import UUID as _UUID
+    from app.repositories import IngestedTopicRepository, ChunkRepository, StudentLessonRepository
+    from app.tutor.enums import ObjectiveTeachingState
+    from app.tutor.lesson_generator import _slug
+
+    locale = _get_locale_from_state(state)
+    lang = locale.split("-")[0].lower() if locale else "en"
+
+    topic_repo = IngestedTopicRepository(state.db_session)
+    try:
+        ingested_topic = await topic_repo.get_by_id(_UUID(topic_id_str))
+    except Exception as e:
+        logger.warning(f"Invalid pre-selected topic id '{topic_id_str}': {e}")
+        state.pre_selected_ingested_topic_id = None
+        return state
+
+    if not ingested_topic:
+        logger.warning(f"Pre-selected IngestedTopic {topic_id_str} not found, falling through")
+        state.pre_selected_ingested_topic_id = None
+        return state
+
+    # Load linked chunks
+    rag_chunks: list = []
+    if ingested_topic.chunk_ids:
+        chunk_repo = ChunkRepository(state.db_session)
+        for cid_str in ingested_topic.chunk_ids[:15]:
+            try:
+                chunk = await chunk_repo.get_by_id(_UUID(cid_str))
+                if chunk:
+                    rag_chunks.append({"chunk_id": str(chunk.id), "text": chunk.text})
+            except Exception:
+                pass
+
+    state.rag_chunks = rag_chunks
+    state.rag_source = "ingested"
+    state.selected_ingested_topic_id = str(ingested_topic.id)
+
+    # Adapt objectives to student profile
+    suggested = ingested_topic.suggested_objectives or []
+    grade = None
+    level = None
+    if state.student_profile:
+        grade = state.student_profile.grade_band
+        level = state.student_profile.skill_level
+    if not grade and state.session and state.session.session_metadata:
+        onb = (state.session.session_metadata.get("onboarding") or {}).get("answers") or {}
+        grade = grade or onb.get("grade")
+        level = level or onb.get("level")
+
+    adapted_objectives = await _adapt_objectives(
+        suggested, ingested_topic.topic_name,
+        grade=grade, level=level,
+        tenant_id=state.tenant_id,
+    )
+
+    lesson_id = f"lesson_{_slug(ingested_topic.topic_name)}_{_slug(grade or 'x')}_{_slug(level or 'x')}"
+    lesson_repo = StudentLessonRepository(state.db_session)
+    objective_dicts: list = []
+    for i, obj in enumerate(adapted_objectives):
+        obj_id = f"obj_{_slug(obj['title'], 40)}"
+        if any(o["objective_id"] == obj_id for o in objective_dicts):
+            obj_id = f"{obj_id}_{i}"
+        objective_dicts.append({
+            "objective_id": obj_id,
+            "title": obj["title"],
+            "description": obj.get("description"),
+        })
+
+    await lesson_repo.create_lesson(
+        tenant_id=state.tenant_id,
+        student_id=state.student_id,
+        lesson_id=lesson_id,
+        topic=ingested_topic.topic_name,
+        title=ingested_topic.topic_name,
+        objectives=objective_dicts,
+        grade=grade,
+        skill_level=level,
+        language=(locale.split("-")[0] if locale else "en"),
+        source="ingested",
+    )
+    await state.db_session.flush()
+
+    objective_ids = [o["objective_id"] for o in objective_dicts]
+    objective_labels = {o["objective_id"]: o["title"] for o in objective_dicts}
+
+    state.lesson_id = lesson_id
+    state.objective_ids = objective_ids
+    state.objective_labels = objective_labels
+    state.awaiting_topic_selection = False
+    state.pending_ingested_topics = []
+    state.needs_lesson_generation = False
+    state.pre_selected_ingested_topic_id = None
+
+    # Persist to session
+    session_repo = TutorSessionRepository(state.db_session)
+    meta = dict(state.session.session_metadata or {})
+    meta["objective_labels"] = objective_labels
+    meta["awaiting_topic_selection"] = False
+    meta["pending_ingested_topics"] = []
+    meta["selected_ingested_topic_id"] = state.selected_ingested_topic_id
+    await session_repo.update_session(
+        tenant_id=state.tenant_id,
+        session_id=state.session.id,
+        lesson_id=lesson_id,
+        objective_ids=objective_ids,
+        session_metadata=meta,
+    )
+    await state.db_session.flush()
+
+    # Create ObjectiveState records
+    objective_repo = ObjectiveStateRepository(state.db_session)
+    state.objectives = {}
+    for obj_id in objective_ids:
+        obj_state = await objective_repo.create_objective_state(
+            tenant_id=state.tenant_id,
+            session_id=state.session.id,
+            objective_id=obj_id,
+            initial_state=ObjectiveTeachingState.NOT_STARTED.value,
+        )
+        state.objectives[obj_id] = obj_state
+    await state.db_session.commit()
+
+    logger.info(
+        f"Pre-selected ingested topic '{ingested_topic.topic_name}', "
+        f"created lesson {lesson_id} with {len(objective_ids)} objectives, "
+        f"{len(rag_chunks)} RAG chunks loaded"
+    )
+    return state
+
+
+async def _adapt_objectives(
+    suggested: list,
+    topic_name: str,
+    grade: str | None = None,
+    level: str | None = None,
+    tenant_id: str = "",
+) -> list:
+    """
+    Take suggested objectives from IngestedTopic and optionally adapt them to
+    the student's grade/level using a lightweight LLM call.
+
+    If grade/level are unknown or the call fails, return the originals as-is.
+    """
+    if not suggested:
+        return [
+            {"title": f"Introduction to {topic_name}", "description": None},
+            {"title": f"Practice {topic_name}", "description": None},
+        ]
+
+    if not grade and not level:
+        return suggested
+
+    import json
+    from app.providers.llm import get_llm_provider, LLMMessage
+
+    prompt = (
+        f"Here are suggested learning objectives for the topic \"{topic_name}\":\n"
+        f"{json.dumps(suggested, indent=2)}\n\n"
+        f"The student is in grade {grade or 'unknown'} and level {level or 'unknown'}.\n"
+        "Adapt these objectives so they are appropriate for this student's grade and level. "
+        "Keep the same number of objectives. Return ONLY a JSON array of objects with keys "
+        "\"title\" and \"description\". No markdown, no explanation."
+    )
+
+    try:
+        llm = get_llm_provider()
+        resp = await llm.generate(
+            messages=[
+                LLMMessage(role="system", content="You output only valid JSON arrays."),
+                LLMMessage(role="user", content=prompt),
+            ],
+            model=settings.TUTOR_LLM_MODEL,
+            temperature=0.4,
+            max_tokens=1200,
+            tenant_id=tenant_id,
+            scenario="objective_adaptation",
+        )
+        text = (resp.content or "").strip()
+        if text.startswith("```"):
+            lines = text.split("\n")
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            text = "\n".join(lines)
+        adapted = json.loads(text)
+        if isinstance(adapted, list) and adapted:
+            return [
+                {
+                    "title": (o.get("title") or "").strip(),
+                    "description": (o.get("description") or "").strip() or None,
+                }
+                for o in adapted
+                if (o.get("title") or "").strip()
+            ] or suggested
+    except Exception as e:
+        logger.warning(f"Objective adaptation LLM call failed: {e}, using originals")
+
+    return suggested
 
 
 # =============================================================================
@@ -625,6 +1241,16 @@ async def save_session_and_profile(
     current_metadata["chat_history"] = chat_history
     current_metadata["no_answer_streak"] = state.no_answer_streak
     current_metadata["objective_labels"] = state.objective_labels or current_metadata.get("objective_labels", {})
+
+    # Persist topic discovery / RAG state (Deliverable 2)
+    current_metadata["awaiting_topic_selection"] = getattr(state, "awaiting_topic_selection", False)
+    current_metadata["pending_ingested_topics"] = getattr(state, "pending_ingested_topics", [])
+    if getattr(state, "selected_ingested_topic_id", None):
+        current_metadata["selected_ingested_topic_id"] = state.selected_ingested_topic_id
+    # Preserve pre-selected topic across turns (set on /start, used after onboarding)
+    pre_sel = getattr(state, "pre_selected_ingested_topic_id", None)
+    if pre_sel:
+        current_metadata["pre_selected_ingested_topic_id"] = pre_sel
     
     update_data["session_metadata"] = current_metadata
     

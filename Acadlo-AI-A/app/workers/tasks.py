@@ -6,11 +6,12 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from app.db.session import async_session_factory
-from app.repositories import DocumentRepository, ChunkRepository, IngestionJobRepository
+from app.repositories import DocumentRepository, ChunkRepository, IngestionJobRepository, IngestedTopicRepository
 from app.services.extractor import ContentExtractor
 from app.core.config import settings
 from app.services.chunker import TextChunker
 from app.providers.embedding import get_embedding_provider
+from app.services.topic_extractor import extract_topics_from_text, map_topics_to_chunks
 
 # Use specific logger name to match logging_config.py handler
 logger = logging.getLogger("ingestion_service")
@@ -154,9 +155,65 @@ async def process_ingestion_job(
                     raise Exception(f"Embedding generation failed: {str(e)}") from e
             
             # Create chunk records in database (with embeddings)
+            created_chunks = []
             if chunks_data:
-                await chunk_repo.create_chunks_bulk(chunks_data)
-            
+                created_chunks = await chunk_repo.create_chunks_bulk(chunks_data)
+
+            # ----- Topic extraction (Deliverable 2) -----
+            topics_created = 0
+            try:
+                logger.info("=" * 60)
+                logger.info("TOPIC EXTRACTION PHASE")
+                logger.info("=" * 60)
+
+                raw_topics = await extract_topics_from_text(
+                    text=text_content,
+                    tenant_id=document.tenant_id,
+                )
+
+                if raw_topics and created_chunks:
+                    chunk_id_strs = [str(c.id) for c in created_chunks]
+                    chunk_embeds = [
+                        list(c.embedding) if c.embedding is not None else []
+                        for c in created_chunks
+                    ]
+                    valid_pairs = [
+                        (cid, emb)
+                        for cid, emb in zip(chunk_id_strs, chunk_embeds)
+                        if emb
+                    ]
+                    if valid_pairs:
+                        v_ids, v_embeds = zip(*valid_pairs)
+                        raw_topics = await map_topics_to_chunks(
+                            topics=raw_topics,
+                            chunk_ids=list(v_ids),
+                            chunk_embeddings=list(v_embeds),
+                        )
+
+                    topic_repo = IngestedTopicRepository(session)
+                    topic_records = []
+                    for t in raw_topics:
+                        topic_records.append({
+                            "tenant_id": document.tenant_id,
+                            "document_id": doc_uuid,
+                            "subject": t["subject"],
+                            "topic_name": t["topic_name"],
+                            "description": t.get("description", ""),
+                            "grade_level": t.get("grade_level"),
+                            "suggested_objectives": t.get("suggested_objectives", []),
+                            "chunk_ids": t.get("chunk_ids", []),
+                            "topic_embedding": t.get("topic_embedding"),
+                        })
+                    if topic_records:
+                        await topic_repo.create_topics_bulk(topic_records)
+                        topics_created = len(topic_records)
+
+                logger.info(f"Topic extraction complete: {topics_created} topics stored")
+                logger.info("=" * 60)
+
+            except Exception as e:
+                logger.warning(f"Topic extraction failed (non-fatal): {e}")
+
             # Mark job as completed
             await job_repo.mark_completed(job_uuid, document_id=doc_uuid)
             await session.commit()
@@ -170,6 +227,7 @@ async def process_ingestion_job(
                 "chunks_created": len(chunks_data),
                 "text_length": len(text_content),
                 "embeddings_generated": len(chunks_data),
+                "topics_extracted": topics_created,
             }
             
         except Exception as e:

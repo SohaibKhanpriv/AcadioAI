@@ -22,8 +22,8 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://redis:6379"
     
     # Embedding Provider (OpenAI)
-    OPENAI_API_KEY: str = "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"  # Required for embedding generation
-    EMBEDDING_MODEL_NAME: str = "text-embedding-3-small" 
+    OPENAI_API_KEY: str  # Will be loaded from environment variable
+    EMBEDDING_MODEL_NAME: str  # Will be loaded from environment variable
     
     # LLM Provider Configuration
     LLM_PROVIDER: str = "openai"  # Provider type: "openai", "selfhosted", etc.
@@ -87,3 +87,10 @@ class Settings(BaseSettings):
 
 # Global settings instance
 settings = Settings()
+import os
+
+# If OPENAI_API_KEY is not set in the config, get it directly from environment
+if not settings.OPENAI_API_KEY:
+    env_openai_key = os.environ.get("OPENAI_API_KEY")
+    if env_openai_key:
+        settings.OPENAI_API_KEY = env_openai_key

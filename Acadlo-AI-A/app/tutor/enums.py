@@ -107,3 +107,20 @@ class AffectSignal(str, Enum):
     ANXIOUS = "anxious"
     NEUTRAL = "neutral"
 
+
+class SubjectEnum(str, Enum):
+    """
+    Hardcoded subject classification used during ingestion (to tag extracted
+    topics) and during tutor discovery (to classify a student's query).
+    """
+    MATH = "math"
+    SCIENCE = "science"
+    ARABIC = "arabic"
+    ENGLISH = "english"
+    ISLAMIC_STUDIES = "islamic_studies"
+    SOCIAL_STUDIES = "social_studies"
+    TECHNOLOGY = "technology"
+    ART = "art"
+    PHYSICAL_EDUCATION = "physical_education"
+    OTHER = "other"
+

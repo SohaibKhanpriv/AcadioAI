@@ -68,6 +68,10 @@ async def run_tutor_start(
     # Store locale in a way that graph nodes can access
     # This is a proper dataclass field so it survives LangGraph serialization
     initial_state.locale_hint = effective_locale
+
+    # Pre-selected ingested topic (skips "what topic?" onboarding)
+    if params.ingested_topic_id:
+        initial_state.pre_selected_ingested_topic_id = params.ingested_topic_id
     
     # Invoke graph (returns dict, not dataclass)
     final_state = await tutor_app.ainvoke(initial_state)

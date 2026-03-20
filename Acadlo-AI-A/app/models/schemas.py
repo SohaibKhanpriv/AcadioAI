@@ -448,6 +448,10 @@ class StartTutorSessionRequest(BaseModel):
     locale: Optional[str] = Field(None, description="Locale (BCP-47, e.g. 'ar-JO', 'en-US')")
     initial_student_message: Optional[str] = Field(None, description="Optional first message")
     lesson_config: Optional[Dict[str, Any]] = Field(None, description="Lesson teaching config")
+    ingested_topic_id: Optional[str] = Field(
+        None,
+        description="Pre-selected ingested topic ID. Skips 'what topic?' onboarding question.",
+    )
     include_thinking_trace: bool = Field(default=False, description="Include thinking trace in debug")
 
     @field_validator('objective_ids', 'objectives')
@@ -509,4 +513,29 @@ class TutorErrorCodes:
     SESSION_TERMINAL = "session_terminal"
     TENANT_MISMATCH = "tenant_mismatch"
     INTERNAL_ERROR = "internal_error"
+
+
+# ============================================================================
+# Ingested Topics
+# ============================================================================
+
+class IngestedTopicItem(BaseModel):
+    """Single ingested topic returned by the topics listing API."""
+    id: str = Field(..., description="Ingested topic UUID")
+    topic_name: str = Field(..., description="Topic name")
+    subject: str = Field(..., description="Subject classification")
+    description: str = Field("", description="Brief description of the topic")
+    grade_level: Optional[str] = Field(None, description="Grade level if available")
+    suggested_objectives: List[Dict[str, Any]] = Field(
+        default_factory=list, description="Suggested learning objectives"
+    )
+    document_id: str = Field(..., description="Source document UUID")
+    created_at: datetime = Field(..., description="When the topic was extracted")
+
+
+class IngestedTopicListResponse(BaseModel):
+    """Response for GET /v1/topics."""
+    tenant_id: str = Field(..., description="Tenant identifier")
+    topics: List[IngestedTopicItem] = Field(default_factory=list)
+    total: int = Field(..., description="Total number of topics returned")
 

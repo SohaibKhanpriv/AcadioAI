@@ -7,6 +7,7 @@ from app.repositories.tutor_session_repo import TutorSessionRepository
 from app.repositories.objective_state_repo import ObjectiveStateRepository
 from app.repositories.student_profile_repo import StudentProfileRepository
 from app.repositories.student_lesson_repo import StudentLessonRepository
+from app.repositories.ingested_topic_repo import IngestedTopicRepository
 
 __all__ = [
     "BaseRepository",
@@ -17,4 +18,5 @@ __all__ = [
     "ObjectiveStateRepository",
     "StudentProfileRepository",
     "StudentLessonRepository",
+    "IngestedTopicRepository",
 ]

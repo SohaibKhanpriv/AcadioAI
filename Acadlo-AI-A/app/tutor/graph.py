@@ -19,6 +19,7 @@ from app.tutor.graph_nodes import (
     load_session_and_profile,
     onboarding_check,
     generate_onboarding_response,
+    discover_topics,
     resolve_lesson,
     select_current_objective,
     route_by_objective_state,
@@ -54,6 +55,7 @@ def build_tutor_graph():
     graph.add_node("load_session_and_profile", load_session_and_profile)
     graph.add_node("onboarding_check", onboarding_check)
     graph.add_node("generate_onboarding_response", generate_onboarding_response)
+    graph.add_node("discover_topics", discover_topics)
     graph.add_node("resolve_lesson", resolve_lesson)
     graph.add_node("select_current_objective", select_current_objective)
     graph.add_node("lesson_complete", lesson_complete)
@@ -76,10 +78,23 @@ def build_tutor_graph():
         _route_after_onboarding,
         {
             "generate_onboarding_response": "generate_onboarding_response",
-            "resolve_lesson": "resolve_lesson",
+            "discover_topics": "discover_topics",
         },
     )
     graph.add_edge("generate_onboarding_response", "save_session_and_profile")
+
+    # After discover_topics, route based on whether a topic was matched,
+    # the student is being asked to pick, or we need LLM generation.
+    graph.add_conditional_edges(
+        "discover_topics",
+        _route_after_discover,
+        {
+            "save_session_and_profile": "save_session_and_profile",
+            "resolve_lesson": "resolve_lesson",
+            "select_current_objective": "select_current_objective",
+        },
+    )
+
     graph.add_edge("resolve_lesson", "select_current_objective")
     
     # Conditional routing from select_current_objective
@@ -118,16 +133,47 @@ def build_tutor_graph():
 
 def _route_after_onboarding(
     state: TutorGraphContext,
-) -> Literal["generate_onboarding_response", "resolve_lesson"]:
-    """Route after onboarding_check: ask more questions or proceed to resolve_lesson."""
+) -> Literal["generate_onboarding_response", "discover_topics"]:
+    """Route after onboarding_check: ask more questions or proceed to discover_topics."""
     complete = (
         state.get("onboarding_complete", False)
         if isinstance(state, dict)
         else getattr(state, "onboarding_complete", False)
     )
     if complete:
-        return "resolve_lesson"
+        return "discover_topics"
     return "generate_onboarding_response"
+
+
+def _route_after_discover(
+    state: TutorGraphContext,
+) -> Literal["save_session_and_profile", "resolve_lesson", "select_current_objective"]:
+    """
+    Route after discover_topics:
+    - If awaiting_topic_selection is True → the tutor reply is set with the
+      list of topics; save and end this turn.
+    - If needs_lesson_generation is True → no ingested topics matched or
+      student chose 'other'; fall through to LLM-based resolve_lesson.
+    - Otherwise → the student selected an ingested topic and lesson/objectives
+      were created; skip resolve_lesson and go straight to select_current_objective.
+    """
+    awaiting = (
+        state.get("awaiting_topic_selection", False)
+        if isinstance(state, dict)
+        else getattr(state, "awaiting_topic_selection", False)
+    )
+    if awaiting:
+        return "save_session_and_profile"
+
+    needs_gen = (
+        state.get("needs_lesson_generation", False)
+        if isinstance(state, dict)
+        else getattr(state, "needs_lesson_generation", False)
+    )
+    if needs_gen:
+        return "resolve_lesson"
+
+    return "select_current_objective"
 
 
 def route_by_objective_state_updated(

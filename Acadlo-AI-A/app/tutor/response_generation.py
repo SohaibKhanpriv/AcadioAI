@@ -74,6 +74,8 @@ async def generate_tutor_response(
     last_tutor_message: Optional[str] = None,
     grade_band: Optional[str] = None,
     skill_level: Optional[str] = None,
+    rag_chunks: Optional[list] = None,
+    rag_source: Optional[str] = None,
 ) -> TutorMessage:
     """
     Generate a tutor message from a TutorActionPlan using the configured LLM.
@@ -91,6 +93,25 @@ async def generate_tutor_response(
             student_message=student_message,
             last_tutor_message=last_tutor_message,
         )
+
+        # Inject RAG reference material when available
+        if rag_chunks and rag_source == "ingested":
+            rag_block_parts = ["=== REFERENCE MATERIAL (from student's textbook) ==="]
+            for i, chunk in enumerate(rag_chunks[:8], start=1):
+                text = chunk.get("text", "") if isinstance(chunk, dict) else str(chunk)
+                rag_block_parts.append(f"[{i}] {text}")
+            rag_block_parts.append("===")
+            rag_block_parts.append(
+                "Use the above reference material for your explanations, examples, "
+                "and questions whenever relevant. Cite specific content rather than "
+                "inventing generic examples."
+            )
+            user_prompt = "\n".join(rag_block_parts) + "\n\n" + user_prompt
+        elif not rag_chunks:
+            user_prompt += (
+                "\n\n[Note: No course material is available for this topic. "
+                "Use your general knowledge.]"
+            )
         
         llm_provider = get_llm_provider()
         

@@ -214,6 +214,7 @@ async def start_tutor_session(
             context_scopes=body.context_scopes,
             lesson_config=lesson_config,
             initial_student_message=body.initial_student_message,
+            ingested_topic_id=body.ingested_topic_id,
         )
         
         # Store locale in session metadata (done by runner/graph node)

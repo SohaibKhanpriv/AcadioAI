@@ -88,6 +88,14 @@ class TutorGraphContext:
     onboarding_complete: bool = False  # True when we can proceed to teaching / resolve_lesson
     needs_lesson_generation: bool = False  # True when lesson_id is pending and we need to resolve
 
+    # ===== Topic discovery & RAG (Deliverable 2) =====
+    awaiting_topic_selection: bool = False
+    pending_ingested_topics: List[Dict[str, Any]] = field(default_factory=list)
+    selected_ingested_topic_id: Optional[str] = None
+    rag_chunks: List[Dict[str, str]] = field(default_factory=list)
+    rag_source: Optional[str] = None  # "ingested" or "none"
+    pre_selected_ingested_topic_id: Optional[str] = None  # set from /start when caller picks a topic
+
 
 @dataclass
 class TutorStartParams:
@@ -104,6 +112,7 @@ class TutorStartParams:
     lesson_config: Optional[LessonTeachingConfig] = None
     initial_student_message: Optional[str] = None  # optional first message from student
     locale: Optional[str] = None  # BCP-47 locale code (e.g. 'ar-JO', 'en-US')
+    ingested_topic_id: Optional[str] = None  # pre-selected ingested topic
 
 
 @dataclass

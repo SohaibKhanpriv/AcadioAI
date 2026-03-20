@@ -20,6 +20,7 @@ from app.api.v1.search import router as search_router
 from app.api.v1.chat import router as chat_router
 from app.api.v1.llm_test import router as llm_test_router
 from app.api.v1.tutor import router as tutor_router
+from app.api.v1.topics import router as topics_router
 from app.db.session import init_db, close_db
 
 
@@ -105,6 +106,7 @@ app.include_router(search_router)
 app.include_router(chat_router)
 app.include_router(llm_test_router, prefix="/v1/llm", tags=["LLM Testing"])
 app.include_router(tutor_router)  # Tutor API (M4-G)
+app.include_router(topics_router)  # Ingested Topics API
 
 
 if __name__ == "__main__":
