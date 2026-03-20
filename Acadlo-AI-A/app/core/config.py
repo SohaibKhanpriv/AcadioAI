@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     CHAT_HISTORY_MAX_CHARS_PER_MESSAGE: int = 2000  # Max chars per history message
     
     # CORS
-    CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:8080", "https://acadlo-ai.prefly.dev/"]
+    CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:8080", "https://acadlo-ai.prefly.dev/", "http://3.141.165.198:3000", "http://3.141.165.198", "http://18.191.229.91:3000", "http://18.191.229.91", "http://ec2-18-191-229-91.us-east-2.compute.amazonaws.com:3000", "http://ec2-18-191-229-91.us-east-2.compute.amazonaws.com"]
 
     # Uploads
     UPLOAD_DIR: str = "uploads"
